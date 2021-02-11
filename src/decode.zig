@@ -19,14 +19,16 @@ fn read(buf: []const u8) DecodeError!value.Value {
         Format.never_used => error.ReservedFormat,
         Format.bool_false => value.Value{ .bool = false },
         Format.bool_true => value.Value{ .bool = true },
-        Format.int8 => read_i8(buf[1..]),
-        Format.int16 => read_i16(buf[1..]),
-        Format.int32 => read_i32(buf[1..]),
-        Format.int64 => read_i64(buf[1..]),
+        Format.float32 => read_float32(buf[1..]),
+        Format.float64 => read_float64(buf[1..]),
         Format.uint8 => read_u8(buf[1..]),
         Format.uint16 => read_u16(buf[1..]),
         Format.uint32 => read_u32(buf[1..]),
         Format.uint64 => read_u64(buf[1..]),
+        Format.int8 => read_i8(buf[1..]),
+        Format.int16 => read_i16(buf[1..]),
+        Format.int32 => read_i32(buf[1..]),
+        Format.int64 => read_i64(buf[1..]),
         Format.positive_fix_int => |i| value.Value{ .uint = i },
         Format.negative_fix_int => |i| value.Value{ .int = @intCast(i64, i) },
         else => unreachable,
@@ -87,6 +89,20 @@ fn read_i64(buf: []const u8) DecodeError!value.Value {
         return error.TruncatedInput;
     }
     return value.Value{ .int = std.mem.readIntSliceBig(i64, buf) };
+}
+
+fn read_f32(buf: []const u8) DecodeError!value.Value {
+    if (buf.len < 4) {
+        return error.TruncatedInput;
+    }
+    return value.Value{ .float = @as(f32, std.mem.readIntSliceBig(i32, buf)) };
+}
+
+fn read_f64(buf: []const u8) DecodeError!value.Value {
+    if (buf.len < 8) {
+        return error.TruncatedInput;
+    }
+    return value.Value{ .float = @as(f64, std.mem.readIntSliceBig(i64, buf)) };
 }
 
 test "empty input" {
@@ -282,6 +298,14 @@ test "decode int64 truncated error" {
         error.TruncatedInput => {},
         else => @panic("invalid error received, expected truncated input"),
     }
+}
+
+test "decode float 64" {
+    const hex = "cb40918c7df3b645a2"; // 1123.123
+    var data: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(data[0..], hex);
+    var v = try read(data[0..]);
+    expect(v.float == 1123.123);
 }
 
 test "decode positive fix int" {
