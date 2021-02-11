@@ -10,7 +10,7 @@ const DecodeError = error{
     ReservedFormat,
 };
 
-fn read(buf: []const u8) DecodeError!value.Value {
+pub fn read(buf: []const u8) DecodeError!value.Value {
     if (buf.len == 0) {
         return error.EmptyInput;
     }
@@ -19,8 +19,8 @@ fn read(buf: []const u8) DecodeError!value.Value {
         Format.never_used => error.ReservedFormat,
         Format.bool_false => value.Value{ .bool = false },
         Format.bool_true => value.Value{ .bool = true },
-        Format.float32 => read_float32(buf[1..]),
-        Format.float64 => read_float64(buf[1..]),
+        Format.float32 => read_f32(buf[1..]),
+        Format.float64 => read_f64(buf[1..]),
         Format.uint8 => read_u8(buf[1..]),
         Format.uint16 => read_u16(buf[1..]),
         Format.uint32 => read_u32(buf[1..]),
@@ -95,14 +95,14 @@ fn read_f32(buf: []const u8) DecodeError!value.Value {
     if (buf.len < 4) {
         return error.TruncatedInput;
     }
-    return value.Value{ .float = @as(f32, std.mem.readIntSliceBig(i32, buf)) };
+    return value.Value{ .float = @bitCast(f32, std.mem.readIntSliceBig(u32, buf)) };
 }
 
 fn read_f64(buf: []const u8) DecodeError!value.Value {
     if (buf.len < 8) {
         return error.TruncatedInput;
     }
-    return value.Value{ .float = @as(f64, std.mem.readIntSliceBig(i64, buf)) };
+    return value.Value{ .float = @bitCast(f64, std.mem.readIntSliceBig(u64, buf)) };
 }
 
 test "empty input" {
@@ -298,6 +298,14 @@ test "decode int64 truncated error" {
         error.TruncatedInput => {},
         else => @panic("invalid error received, expected truncated input"),
     }
+}
+
+test "decode float 32" {
+    const hex = "ca40918c7d"; // 4.548399448394775
+    var data: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(data[0..], hex);
+    var v = try read(data[0..]);
+    expect(v.float == 4.548399448394775);
 }
 
 test "decode float 64" {

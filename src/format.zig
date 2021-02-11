@@ -57,8 +57,7 @@ pub const Format = union(enum) {
         } else if (f >= 0xa0 and f <= 0xbf) {
             return .{ .fix_str = f & FIXSTR_SIZE };
         } else if (f >= 0xe0 and f <= 0xff) {
-            var sl = [1]u8{f};
-            return .{ .negative_fix_int = std.mem.readIntSliceBig(i8, sl[0..]) };
+            return .{ .negative_fix_int = @bitCast(i8, f) };
         }
 
         return switch (f) {

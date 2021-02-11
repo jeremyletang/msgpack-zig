@@ -15,7 +15,13 @@ pub fn main() anyerror!void {
     var data = try arena.allocator.alloc(u8, hexdata.len / 2);
     try std.fmt.hexToBytes(data, hexdata);
 
-    const v = try decode.decode(data);
+    // const v = try decode.read(data);
+
+    const hex = "ca40918c7d"; // 1123.123
+    var data2: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(data2[0..], hex);
+    var v2 = try decode.read(data2[0..]);
+    std.log.info("VALUE: {}", .{v2.float});
 
     // const f = Format.from_u8(0xd4);
     // std.log.info("All your codebase are belong to us. {}, {}", .{ f, f.to_u8() });
