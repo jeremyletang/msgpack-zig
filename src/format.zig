@@ -1,8 +1,8 @@
 const std = @import("std");
 
-const FIXSTR_SIZE: u8 = 0x1f;
-const FIXARRAY_SIZE: u8 = 0x0f;
-const FIXMAP_SIZE: u8 = 0x0f;
+pub const FIXSTR_SIZE: u8 = 0x1f;
+pub const FIXARRAY_SIZE: u8 = 0x0f;
+pub const FIXMAP_SIZE: u8 = 0x0f;
 
 pub fn from_u8(u: u8) Format {
     return Format.from_u8(u);
@@ -100,9 +100,9 @@ pub const Format = union(enum) {
     pub fn toUint8(f: Format) u8 {
         return switch (f) {
             .positive_fix_int => |u| u,
-            .fix_map => |u| u,
-            .fix_array => |u| u,
-            .fix_str => |u| u,
+            .fix_map => |u| 0x80 | (u & FIXMAP_SIZE),
+            .fix_array => |u| 0x90 | (u & FIXARRAY_SIZE),
+            .fix_str => |u| 0xa0 | (u & FIXSTR_SIZE),
             .nil => 0xc0,
             .never_used => 0xc1,
             .bool_false => 0xc2,

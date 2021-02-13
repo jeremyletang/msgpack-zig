@@ -8,9 +8,8 @@ const DecodeError = error{
     EmptyInput,
     TruncatedInput,
     ReservedFormat,
-    AllocError,
     InvalidMapKeyType,
-};
+} || error{OutOfMemory};
 
 const ValueWithRest = struct {
     v: value.Value,
@@ -111,7 +110,7 @@ fn readMapValue(allocator: *std.mem.Allocator, buf: []const u8, len: u8) DecodeE
 
         var val = try readValueWithRest(allocator, rest);
         rest = val.rest;
-        m.put(key, val.v) catch |err| return error.AllocError;
+        try m.put(key, val.v);
         i += 1;
     }
 
@@ -135,7 +134,7 @@ fn readArrayValue(allocator: *std.mem.Allocator, buf: []const u8, len: usize) De
         return ValueWithRest{ .v = value.Value{ .array = ([_]value.Value{})[0..] }, .rest = buf };
     }
 
-    var array = allocator.alloc(value.Value, len) catch |err| return error.AllocError;
+    var array = try allocator.alloc(value.Value, len);
     var i: usize = 0;
     var buff = buf;
     while (i < len) {
