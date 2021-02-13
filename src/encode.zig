@@ -16,9 +16,88 @@ pub fn encodeValue(allocator: *std.mem.Allocator, v: value.Value) EncodeError![]
         .string => |val| encodeStringValue(allocator, val),
         .binary => |val| encodeBinaryValue(allocator, val),
         .array => |val| encodeArrayValue(allocator, val),
-        // .map => |val| oth.equalMap(val),
-        else => unreachable,
+        .map => |val| encodeMapValue(allocator, val),
     };
+}
+
+const fix_map_max = 15;
+const map16_max = 65535;
+
+fn encodeMapValue(allocator: *std.mem.Allocator, v: std.StringHashMap(value.Value)) EncodeError![]u8 {
+    if (v.count() <= fix_map_max) {
+        return encodeFixMapValue(allocator, v);
+    } else if (v.count() <= map16_max) {
+        return encodeMap16Value(allocator, v);
+    }
+    return encodeMap32Value(allocator, v);
+}
+
+fn encodeFixMapValue(allocator: *std.mem.Allocator, v: std.StringHashMap(value.Value)) EncodeError![]u8 {
+    var entries = try encodeMapValueEntries(allocator, v);
+    var out = try allocator.alloc(u8, 1 + entries.len);
+    out[0] = (Format{ .fix_map = @intCast(u8, v.count()) }).toUint8();
+    std.mem.copy(u8, out[1..], entries);
+    // now release the elems and joined elems
+    allocator.free(entries);
+    return out;
+}
+
+fn encodeMap16Value(allocator: *std.mem.Allocator, v: std.StringHashMap(value.Value)) EncodeError![]u8 {
+    var entries = try encodeMapValueEntries(allocator, v);
+    var out = try allocator.alloc(u8, 1 + @sizeOf(u16) + entries.len);
+
+    out[0] = Format.map16.toUint8();
+    std.mem.writeIntBig(u16, out[1 .. 1 + @sizeOf(u16)], @intCast(u16, v.count()));
+    std.mem.copy(u8, out[1 + @sizeOf(u16) ..], entries);
+
+    // now release the elems and joined elems
+    allocator.free(entries);
+
+    return out;
+}
+
+fn encodeMap32Value(allocator: *std.mem.Allocator, v: std.StringHashMap(value.Value)) EncodeError![]u8 {
+    var entries = try encodeMapValueEntries(allocator, v);
+    var out = try allocator.alloc(u8, 1 + @sizeOf(u32) + entries.len);
+
+    out[0] = Format.map32.toUint8();
+    std.mem.writeIntBig(u32, out[1 .. 1 + @sizeOf(u32)], @intCast(u32, v.count()));
+    std.mem.copy(u8, out[1 + @sizeOf(u32) ..], entries);
+
+    // now release the elems and joined elems
+    allocator.free(entries);
+
+    return out;
+}
+
+fn encodeMapValueEntries(allocator: *std.mem.Allocator, v: std.StringHashMap(value.Value)) EncodeError![]u8 {
+    // allocate twice the size as we space for each keys
+    // and values.
+    var entries = try allocator.alloc([]u8, v.count() * 2);
+    var i: usize = 0;
+    var it = v.iterator();
+    while (it.next()) |entry| {
+        // FIXME(): we have a memory leak here most likely
+        // in the case we return an error the error is not
+        // freed, but knowing that the only error which can happen
+        // in encodeValue is an OutOfMemory error, it's quite
+        // certain we would not recover anyway. Will take care of
+        // this later
+        var encodedkey = try encodeStringValue(allocator, entry.key);
+        entries[i] = encodedkey;
+        var encodedvalue = try encodeValue(allocator, entry.value);
+        entries[i + 1] = encodedvalue;
+        i += 2;
+    }
+    // FIXME(): see previous comment, same concerns.
+    var out = try std.mem.join(allocator, &[_]u8{}, entries);
+    // free the slice of encoded elements as they are not required anymore
+    for (entries) |e| {
+        allocator.free(e);
+    }
+    allocator.free(entries);
+
+    return out;
 }
 
 const fix_array_max = 15;
