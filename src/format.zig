@@ -97,7 +97,7 @@ pub const Format = union(enum) {
         };
     }
 
-    pub fn to_u8(f: Format) u8 {
+    pub fn toUint8(f: Format) u8 {
         return switch (f) {
             .positive_fix_int => |u| u,
             .fix_map => |u| u,
