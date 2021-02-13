@@ -103,31 +103,31 @@ fn encodeMapValueEntries(allocator: *std.mem.Allocator, v: std.StringHashMap(val
 const fix_array_max = 15;
 const array16_max = 65535;
 
-fn encodeArrayValue(allocator: *std.mem.Allocator, v: []value.Value) EncodeError![]u8 {
-    if (v.len <= fix_array_max) {
+fn encodeArrayValue(allocator: *std.mem.Allocator, v: std.ArrayList(value.Value)) EncodeError![]u8 {
+    if (v.items.len <= fix_array_max) {
         return encodeFixArrayValue(allocator, v);
-    } else if (v.len <= array16_max) {
+    } else if (v.items.len <= array16_max) {
         return encodeArray16Value(allocator, v);
     }
     return encodeArray32Value(allocator, v);
 }
 
-fn encodeFixArrayValue(allocator: *std.mem.Allocator, v: []value.Value) EncodeError![]u8 {
+fn encodeFixArrayValue(allocator: *std.mem.Allocator, v: std.ArrayList(value.Value)) EncodeError![]u8 {
     var elems = try encodeArrayValueElements(allocator, v);
     var out = try allocator.alloc(u8, 1 + elems.len);
-    out[0] = (Format{ .fix_array = @intCast(u8, v.len) }).toUint8();
+    out[0] = (Format{ .fix_array = @intCast(u8, v.items.len) }).toUint8();
     std.mem.copy(u8, out[1..], elems);
     // now release the elems and joined elems
     allocator.free(elems);
     return out;
 }
 
-fn encodeArray16Value(allocator: *std.mem.Allocator, v: []value.Value) EncodeError![]u8 {
+fn encodeArray16Value(allocator: *std.mem.Allocator, v: std.ArrayList(value.Value)) EncodeError![]u8 {
     var elems = try encodeArrayValueElements(allocator, v);
     var out = try allocator.alloc(u8, 1 + @sizeOf(u16) + elems.len);
 
     out[0] = Format.array16.toUint8();
-    std.mem.writeIntBig(u16, out[1 .. 1 + @sizeOf(u16)], @intCast(u16, v.len));
+    std.mem.writeIntBig(u16, out[1 .. 1 + @sizeOf(u16)], @intCast(u16, v.items.len));
     std.mem.copy(u8, out[1 + @sizeOf(u16) ..], elems);
 
     // now release the elems and joined elems
@@ -136,12 +136,12 @@ fn encodeArray16Value(allocator: *std.mem.Allocator, v: []value.Value) EncodeErr
     return out;
 }
 
-fn encodeArray32Value(allocator: *std.mem.Allocator, v: []value.Value) EncodeError![]u8 {
+fn encodeArray32Value(allocator: *std.mem.Allocator, v: std.ArrayList(value.Value)) EncodeError![]u8 {
     var elems = try encodeArrayValueElements(allocator, v);
     var out = try allocator.alloc(u8, 1 + @sizeOf(u32) + elems.len);
 
     out[0] = Format.array32.toUint8();
-    std.mem.writeIntBig(u32, out[1 .. 1 + @sizeOf(u32)], @intCast(u32, v.len));
+    std.mem.writeIntBig(u32, out[1 .. 1 + @sizeOf(u32)], @intCast(u32, v.items.len));
     std.mem.copy(u8, out[1 + @sizeOf(u32) ..], elems);
 
     // now release the elems and joined elems
@@ -150,17 +150,17 @@ fn encodeArray32Value(allocator: *std.mem.Allocator, v: []value.Value) EncodeErr
     return out;
 }
 
-fn encodeArrayValueElements(allocator: *std.mem.Allocator, v: []value.Value) EncodeError![]u8 {
-    var elems = try allocator.alloc([]u8, v.len);
+fn encodeArrayValueElements(allocator: *std.mem.Allocator, v: std.ArrayList(value.Value)) EncodeError![]u8 {
+    var elems = try allocator.alloc([]u8, v.items.len);
     var i: usize = 0;
-    while (i < v.len) {
+    while (i < v.items.len) {
         // FIXME(): we have a memory leak here most likely
         // in the case we return an error the error is not
         // freed, but knowing that the only error which can happen
         // in encodeValue is an OutOfMemory error, it's quite
         // certain we would not recover anyway. Will take care of
         // this later
-        var encoded = try encodeValue(allocator, v[i]);
+        var encoded = try encodeValue(allocator, v.items[i]);
         elems[i] = encoded;
         i += 1;
     }

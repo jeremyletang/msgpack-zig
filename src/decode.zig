@@ -131,16 +131,17 @@ fn readArray32Value(allocator: *std.mem.Allocator, buf: []const u8) DecodeError!
 
 fn readArrayValue(allocator: *std.mem.Allocator, buf: []const u8, len: usize) DecodeError!ValueWithRest {
     if (len == 0) {
-        return ValueWithRest{ .v = value.Value{ .array = ([_]value.Value{})[0..] }, .rest = buf };
+        return ValueWithRest{ .v = value.Value{ .array = try std.ArrayList(value.Value).initCapacity(allocator, 0) }, .rest = buf };
     }
 
-    var array = try allocator.alloc(value.Value, len);
+    var array = try std.ArrayList(value.Value).initCapacity(allocator, len);
     var i: usize = 0;
     var buff = buf;
     while (i < len) {
         var val = try readValueWithRest(allocator, buff);
         buff = val.rest;
-        array[i] = val.v;
+        // array.items[i] = val.v;
+        try array.append(val.v);
         i += 1;
     }
 
@@ -538,7 +539,7 @@ test "decode empty array" {
     var data: [hex.len / 2]u8 = undefined;
     try std.fmt.hexToBytes(data[0..], hex);
     var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.array.len == 0);
+    expect(v.array.items.len == 0);
 }
 
 test "decode array many types" {
@@ -546,13 +547,12 @@ test "decode array many types" {
     var data: [hex.len / 2]u8 = undefined;
     try std.fmt.hexToBytes(data[0..], hex);
     var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.array.len == 4);
-    expect(v.array[0].uint == 42);
-    expect(v.array[1].bool == true);
-    expect(std.mem.eql(u8, v.array[2].string, "string"));
-    expect(v.array[3].float == 42.42);
-
-    v.free(std.testing.allocator);
+    expect(v.array.items.len == 4);
+    expect(v.array.items[0].uint == 42);
+    expect(v.array.items[1].bool == true);
+    expect(std.mem.eql(u8, v.array.items[2].string, "string"));
+    expect(v.array.items[3].float == 42.42);
+    v.free();
 }
 
 test "decode empty map" {
@@ -561,7 +561,7 @@ test "decode empty map" {
     try std.fmt.hexToBytes(data[0..], hex);
     var v = try decodeValue(std.testing.allocator, data[0..]);
     expect(v.map.count() == 0);
-    v.free(std.testing.allocator);
+    v.free();
 }
 
 test "decode map many fields" {
@@ -587,11 +587,11 @@ test "decode map many fields" {
     expect(v.map.get("b").?.bool == true);
     expect(v.map.get("f").?.float == -2332.32323);
     expect(v.map.get("i").?.int == -12343);
-    expect(v.map.get("a").?.array[0].uint == 1);
-    expect(std.mem.eql(u8, v.map.get("a").?.array[1].string, "hello"));
+    expect(v.map.get("a").?.array.items[0].uint == 1);
+    expect(std.mem.eql(u8, v.map.get("a").?.array.items[1].string, "hello"));
     expect(std.mem.eql(u8, v.map.get("m").?.map.get("s").?.string, "hello world"));
     expect(v.map.get("n").? == .nil);
-    v.free(std.testing.allocator);
+    v.free();
 }
 
 // test "decode str16" {

@@ -9,7 +9,7 @@ pub const Value = union(enum) {
     float: f64,
     string: []const u8,
     binary: []const u8,
-    array: []Value,
+    array: std.ArrayList(Value),
     map: std.StringHashMap(Value),
 
     pub fn fromInt(val: i64) Value {
@@ -107,15 +107,15 @@ pub const Value = union(enum) {
         };
     }
 
-    fn equalArray(self: Value, oth: []Value) bool {
+    fn equalArray(self: Value, oth: std.ArrayList(Value)) bool {
         return switch (self) {
             .array => |val| {
-                if (val.len != oth.len) {
+                if (val.items.len != oth.items.len) {
                     return false;
                 }
                 var i: usize = 0;
-                while (i < val.len) {
-                    if (!val[i].equal(oth[i])) {
+                while (i < val.items.len) {
+                    if (!val.items[i].equal(oth.items[i])) {
                         return false;
                     }
                     i += 1;
@@ -135,18 +135,18 @@ pub const Value = union(enum) {
         };
     }
 
-    pub fn free(self: *Value, allocator: *std.mem.Allocator) void {
+    pub fn free(self: *Value) void {
         switch (self.*) {
             .array => {
-                for (self.array) |*v| {
-                    v.free(allocator);
+                for (self.array.items) |*v| {
+                    v.free();
                 }
-                allocator.free(self.array);
+                self.array.deinit();
             },
             .map => {
                 var it = self.map.iterator();
                 while (it.next()) |i| {
-                    i.value.free(allocator);
+                    i.value.free();
                 }
                 self.map.deinit();
             },
