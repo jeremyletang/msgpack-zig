@@ -1,13 +1,13 @@
 const std = @import("std");
-const decode = @import("decode.zig");
-const encode = @import("encode.zig");
 const format = @import("format.zig");
 const value = @import("value.zig");
 const expect = std.testing.expect;
 
+pub const encodeValue = @import("encode_value.zig").encodeValue;
+pub const decodeValue = @import("decode.zig").decodeValue;
+pub const encode = @import("encode.zig").encode;
+
 pub const Value = value.Value;
-pub const decodeValue = decode.decodeValue;
-pub const encodeValue = encode.encodeValue;
 
 test "test encode / decode map" {
     var values = std.StringHashMap(value.Value).init(std.testing.allocator);
@@ -25,8 +25,8 @@ test "test encode / decode map" {
     try values.put("n", .nil);
 
     var val = value.Value{ .map = values };
-    var encoded = try encode.encodeValue(std.testing.allocator, val);
-    var decoded = try decode.decodeValue(std.testing.allocator, encoded);
+    var encoded = try encodeValue(std.testing.allocator, val);
+    var decoded = try decodeValue(std.testing.allocator, encoded);
 
     expect(std.mem.eql(u8, values.get("s").?.string, decoded.map.get("s").?.string));
     expect(values.get("u").?.uint == decoded.map.get("u").?.uint);
