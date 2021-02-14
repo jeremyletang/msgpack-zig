@@ -4,17 +4,75 @@ const testing = std.testing;
 const value = @import("value.zig");
 const builtin = @import("builtin");
 
-const EncodeError = error{OutOfMemory};
+const EncodeError = error{
+    UnsupportedType,
+    OutOfMemory,
+};
+
+pub fn encode(allocator: *std.mem.Allocator, val: anytype) EncodeError![]u8 {
+    std.debug.print("tinfo: {}\n", .{@typeInfo(@TypeOf(val))});
+    const ti = @typeInfo(@TypeOf(val));
+    return switch (ti) {
+        .Null => encodeNil(allocator),
+        .Bool => encodeBool(allocator, val),
+        .ComptimeInt => encodeIntAny(allocator, val),
+        .ComptimeFloat => encodeFloatAny(allocator, val),
+        .Int => |intInfo| switch (intInfo.is_signed) {
+            true => switch (intInfo.bits) {
+                8 => encodeIntAny(allocator, val),
+                16 => encodeInt16(allocator, val),
+                32 => encodeInt32(allocator, val),
+                64 => encodeInt64(allocator, val),
+                else => error.UnsupportedType,
+            },
+            false => switch (intInfo.bits) {
+                8 => encodeUintAny(allocator, val),
+                16 => encodeUint16(allocator, val),
+                32 => encodeUint32(allocator, val),
+                64 => encodeUint64(allocator, val),
+                else => error.UnsupportedType,
+            },
+        },
+        .Float => |floatInfo| switch (floatInfo.bits) {
+            32 => encodeFloat32(allocator, val),
+            64 => encodeFloat64(allocator, val),
+            else => error.UnsupportedType,
+        },
+        .Optional => {
+            if (val) |tmpv| {
+                return encode(allocator, tmpv);
+            } else {
+                return encodeNil(allocator);
+            }
+        },
+        .Array => |arrayInfo| switch (arrayInfo.child) {
+            u8 => encodeStrAny(allocator, val[0..]),
+            else => encodeArrayAny(arrayInfo.child, allocator, val[0..]),
+        },
+        .Pointer => |pointerInfo| switch (pointerInfo.size) {
+            .One => switch (pointerInfo.child) {
+                u8 => encodeStrAny(allocator, val),
+                else => encode(allocator, val.*),
+            },
+            .Slice => switch (pointerInfo.child) {
+                u8 => encodeStrAny(allocator, val),
+                else => encode(allocator, val),
+            },
+            else => error.UnsupportedType,
+        },
+        else => error.UnsupportedType,
+    };
+}
 
 pub fn encodeValue(allocator: *std.mem.Allocator, v: value.Value) EncodeError![]u8 {
     return switch (v) {
-        .int => |val| encodeIntValue(allocator, val),
-        .uint => |val| encodeUintValue(allocator, val),
+        .int => |val| encodeIntAny(allocator, val),
+        .uint => |val| encodeUintAny(allocator, val),
         .nil => encodeNil(allocator),
         .bool => |val| encodeBool(allocator, val),
-        .float => |val| encodeFloatValue(allocator, val),
-        .string => |val| encodeStringValue(allocator, val),
-        .binary => |val| encodeBinaryValue(allocator, val),
+        .float => |val| encodeFloatAny(allocator, val),
+        .string => |val| encodeStrAny(allocator, val),
+        .binary => |val| encodeBinAny(allocator, val),
         .array => |val| encodeArrayValue(allocator, val),
         .map => |val| encodeMapValue(allocator, val),
     };
@@ -83,7 +141,7 @@ fn encodeMapValueEntries(allocator: *std.mem.Allocator, v: std.StringHashMap(val
         // in encodeValue is an OutOfMemory error, it's quite
         // certain we would not recover anyway. Will take care of
         // this later
-        var encodedkey = try encodeStringValue(allocator, entry.key);
+        var encodedkey = try encodeStrAny(allocator, entry.key);
         entries[i] = encodedkey;
         var encodedvalue = try encodeValue(allocator, entry.value);
         entries[i + 1] = encodedvalue;
@@ -102,6 +160,75 @@ fn encodeMapValueEntries(allocator: *std.mem.Allocator, v: std.StringHashMap(val
 
 const fix_array_max = 15;
 const array16_max = 65535;
+
+fn encodeArrayAny(comptime T: type, allocator: *std.mem.Allocator, v: []const T) EncodeError![]u8 {
+    if (v.len <= fix_array_max) {
+        return encodeFixArray(T, allocator, v);
+    } else if (v.len <= array16_max) {
+        return encodeArray16(T, allocator, v);
+    }
+    return encodeArray32(T, allocator, v);
+}
+
+fn encodeFixArray(comptime T: type, allocator: *std.mem.Allocator, v: []const T) EncodeError![]u8 {
+    var elems = try encodeArrayElements(T, allocator, v);
+    var out = try allocator.alloc(u8, 1 + elems.len);
+    out[0] = (Format{ .fix_array = @intCast(u8, v.len) }).toUint8();
+    std.mem.copy(u8, out[1..], elems);
+    // now release the elems and joined elems
+    allocator.free(elems);
+    return out;
+}
+
+fn encodeArray16(comptime T: type, allocator: *std.mem.Allocator, v: []const T) EncodeError![]u8 {
+    var elems = try encodeArrayElements(T, allocator, v);
+    var out = try allocator.alloc(u8, 1 + @sizeOf(u16) + elems.len);
+
+    out[0] = Format.array16.toUint8();
+    std.mem.writeIntBig(u16, out[1 .. 1 + @sizeOf(u16)], @intCast(u16, v.len));
+    std.mem.copy(u8, out[1 + @sizeOf(u16) ..], elems);
+
+    // now release the elems and joined elems
+    allocator.free(elems);
+    return out;
+}
+fn encodeArray32(comptime T: type, allocator: *std.mem.Allocator, v: []const T) EncodeError![]u8 {
+    var elems = try encodeArrayElements(T, allocator, v);
+    var out = try allocator.alloc(u8, 1 + @sizeOf(u32) + elems.len);
+
+    out[0] = Format.array32.toUint8();
+    std.mem.writeIntBig(u32, out[1 .. 1 + @sizeOf(u32)], @intCast(u32, v.len));
+    std.mem.copy(u8, out[1 + @sizeOf(u32) ..], elems);
+
+    // now release the elems and joined elems
+    allocator.free(elems);
+    return out;
+}
+
+fn encodeArrayElements(comptime T: type, allocator: *std.mem.Allocator, v: []const T) EncodeError![]u8 {
+    var elems = try allocator.alloc([]u8, v.len);
+    var i: usize = 0;
+    while (i < v.len) {
+        // FIXME(): we have a memory leak here most likely
+        // in the case we return an error the error is not
+        // freed, but knowing that the only error which can happen
+        // in encodeValue is an OutOfMemory error, it's quite
+        // certain we would not recover anyway. Will take care of
+        // this later
+        var encoded = try encode(allocator, v[i]);
+        elems[i] = encoded;
+        i += 1;
+    }
+    // FIXME(): see previous comment, same concerns.
+    var out = try std.mem.join(allocator, &[_]u8{}, elems);
+    // free the slice of encoded elements as they are not required anymore
+    for (elems) |e| {
+        allocator.free(e);
+    }
+    allocator.free(elems);
+
+    return out;
+}
 
 fn encodeArrayValue(allocator: *std.mem.Allocator, v: std.ArrayList(value.Value)) EncodeError![]u8 {
     if (v.items.len <= fix_array_max) {
@@ -175,7 +302,7 @@ fn encodeArrayValueElements(allocator: *std.mem.Allocator, v: std.ArrayList(valu
     return out;
 }
 
-fn encodeBinaryValue(allocator: *std.mem.Allocator, v: []const u8) EncodeError![]u8 {
+fn encodeBinAny(allocator: *std.mem.Allocator, v: []const u8) EncodeError![]u8 {
     if (v.len <= str8_max) {
         return encodeBin8(allocator, v);
     } else if (v.len <= str16_max) {
@@ -212,7 +339,7 @@ const fix_str_max = 31;
 const str8_max = 255;
 const str16_max = 65535;
 
-fn encodeStringValue(allocator: *std.mem.Allocator, v: []const u8) EncodeError![]u8 {
+fn encodeStrAny(allocator: *std.mem.Allocator, v: []const u8) EncodeError![]u8 {
     if (v.len <= fix_str_max) {
         return encodeFixStr(allocator, v);
     } else if (v.len <= str8_max) {
@@ -255,7 +382,7 @@ fn encodeStr32(allocator: *std.mem.Allocator, v: []const u8) EncodeError![]u8 {
     return out;
 }
 
-fn encodeFloatValue(allocator: *std.mem.Allocator, v: f64) EncodeError![]u8 {
+fn encodeFloatAny(allocator: *std.mem.Allocator, v: f64) EncodeError![]u8 {
     if (v >= std.math.f32_min and v <= std.math.f32_max) {
         return encodeFloat32(allocator, @floatCast(f32, v));
     }
@@ -291,7 +418,7 @@ const int16_min = -32768;
 const int32_min = -int32_max - 1;
 const int64_min = -int64_max - 1;
 
-fn encodeIntValue(allocator: *std.mem.Allocator, v: i64) EncodeError![]u8 {
+fn encodeIntAny(allocator: *std.mem.Allocator, v: i64) EncodeError![]u8 {
     if (v >= neg_int_fix_min and v <= 0) {
         return encodeNegativeFixInt(allocator, @intCast(i8, v));
     } else if (v >= int8_min and v <= int8_max) {
@@ -338,7 +465,7 @@ fn encodeInt64(allocator: *std.mem.Allocator, v: i64) EncodeError![]u8 {
     return out;
 }
 
-fn encodeUintValue(allocator: *std.mem.Allocator, v: u64) EncodeError![]u8 {
+fn encodeUintAny(allocator: *std.mem.Allocator, v: u64) EncodeError![]u8 {
     if (v <= pos_int_fix_max) {
         return encodePositiveFixInt(allocator, @intCast(u8, v));
     } else if (v <= uint8_max) {
@@ -399,6 +526,121 @@ fn encodeBool(allocator: *std.mem.Allocator, v: bool) EncodeError![]u8 {
     }
     return out;
 }
+
+// encode native types
+
+test "encode nil" {
+    const hex = "c0";
+    var bytes: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(bytes[0..], hex);
+
+    var encoded = try encode(std.testing.allocator, null);
+    testing.expect(std.mem.eql(u8, bytes[0..], encoded));
+    std.testing.allocator.free(encoded);
+}
+
+test "encode optional bool true" {
+    const hex = "c3";
+    var bytes: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(bytes[0..], hex);
+
+    var b: ?bool = true;
+
+    var encoded = try encode(std.testing.allocator, b);
+    testing.expect(std.mem.eql(u8, bytes[0..], encoded));
+    std.testing.allocator.free(encoded);
+}
+
+test "encode bool true" {
+    const hex = "c3";
+    var bytes: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(bytes[0..], hex);
+
+    var encoded = try encode(std.testing.allocator, true);
+    testing.expect(std.mem.eql(u8, bytes[0..], encoded));
+    std.testing.allocator.free(encoded);
+}
+
+test "encode uint64" {
+    const hex = "cf0000001caab5c3b3"; // 123123123123
+    var bytes: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(bytes[0..], hex);
+
+    var u: u64 = 123123123123;
+
+    var encoded = try encode(std.testing.allocator, u);
+    testing.expect(std.mem.eql(u8, bytes[0..], encoded));
+    std.testing.allocator.free(encoded);
+}
+
+test "encode comptime_int" {
+    const hex = "d3fffffffd2198eb05"; // -12321232123
+    var bytes: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(bytes[0..], hex);
+
+    var encoded = try encode(std.testing.allocator, -12321232123);
+    testing.expect(std.mem.eql(u8, bytes[0..], encoded));
+    std.testing.allocator.free(encoded);
+}
+
+test "encode int64" {
+    const hex = "d3fffffffd2198eb05"; // -12321232123
+    var bytes: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(bytes[0..], hex);
+
+    var i: i64 = -12321232123;
+    var encoded = try encode(std.testing.allocator, i);
+    testing.expect(std.mem.eql(u8, bytes[0..], encoded));
+    std.testing.allocator.free(encoded);
+}
+
+test "encode str8 (literal)" {
+    const hex = "d92368656c6c6f20776f726c642068656c6c6f20776f726c642068656c6c6f20776f726c64"; // "hello world hello world hello world"
+    var bytes: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(bytes[0..], hex);
+
+    var encoded = try encode(std.testing.allocator, "hello world hello world hello world");
+    testing.expect(std.mem.eql(u8, bytes[0..], encoded));
+    std.testing.allocator.free(encoded);
+}
+
+test "encode str8 (const)" {
+    const hex = "d92368656c6c6f20776f726c642068656c6c6f20776f726c642068656c6c6f20776f726c64"; // "hello world hello world hello world"
+    var bytes: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(bytes[0..], hex);
+
+    var str: []const u8 = "hello world hello world hello world";
+    var encoded = try encode(std.testing.allocator, str);
+    testing.expect(std.mem.eql(u8, bytes[0..], encoded));
+    std.testing.allocator.free(encoded);
+}
+
+test "encode str8" {
+    const hex = "d92368656c6c6f20776f726c642068656c6c6f20776f726c642068656c6c6f20776f726c64"; // "hello world hello world hello world"
+    var bytes: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(bytes[0..], hex);
+
+    var orig = "hello world hello world hello world";
+    var str: []u8 = try std.testing.allocator.alloc(u8, orig.len);
+    defer std.testing.allocator.free(str);
+    std.mem.copy(u8, str, orig);
+    var encoded = try encode(std.testing.allocator, str);
+    testing.expect(std.mem.eql(u8, bytes[0..], encoded));
+    std.testing.allocator.free(encoded);
+}
+
+test "encode fix array" {
+    const hex = "9acd03e8cd07d0cd0bb8cd0fa0cd1388cd1770cd1b58cd1f40cd2328cd2710"; // [1000,2000,3000,4000,5000,6000,7000,8000,9000,10000]
+    var bytes: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(bytes[0..], hex);
+
+    var array = [_]u16{ 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000 };
+    var encoded = try encode(std.testing.allocator, array);
+    testing.expect(std.mem.eql(u8, bytes[0..], encoded));
+    std.testing.allocator.free(encoded);
+}
+
+// encode value.Value from here
 
 test "encode value: nil" {
     const hex = "c0";
