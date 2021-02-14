@@ -58,6 +58,102 @@ pub const Value = union(enum) {
         };
     }
 
+    pub fn free(self: *Value) void {
+        switch (self.*) {
+            .array => {
+                for (self.array.items) |*v| {
+                    v.free();
+                }
+                self.array.deinit();
+            },
+            .map => {
+                var it = self.map.iterator();
+                while (it.next()) |i| {
+                    i.value.free();
+                }
+                self.map.deinit();
+            },
+            else => {},
+        }
+    }
+
+    pub fn dump(self: Value) void {
+        self.dumpImpl(0);
+        std.debug.print("\n", .{});
+    }
+
+    fn dumpImpl(self: Value, indent: u8) void {
+        switch (self) {
+            .int => |val| std.debug.print("{}", .{val}),
+            .uint => |val| std.debug.print("{}", .{val}),
+            .nil => std.debug.print("null", .{}),
+            .bool => |val| std.debug.print("{}", .{val}),
+            .float => |val| std.debug.print("{}", .{val}),
+            .string => |val| std.debug.print("\"{}\"", .{val}),
+            .binary => |val| dumpBinary(val, indent),
+            .array => |val| dumpArray(val, indent),
+            .map => |val| dumpMap(val, indent),
+        }
+    }
+
+    fn dumpMap(map: std.StringHashMap(Value), indent: u8) void {
+        std.debug.print("{}\n", .{"{"});
+        var i: usize = 0;
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            dumpIndent(indent + 1);
+            std.debug.print("\"{}\": ", .{entry.key});
+            entry.value.dumpImpl(indent + 1);
+            if (i + 1 != map.count()) {
+                std.debug.print(",\n", .{});
+            } else {
+                std.debug.print("\n", .{});
+            }
+            i += 1;
+        }
+
+        dumpIndent(indent);
+        std.debug.print("{}", .{"}"});
+    }
+
+    fn dumpArray(array: std.ArrayList(Value), indent: u8) void {
+        std.debug.print("[\n", .{});
+        var i: usize = 0;
+        while (i < array.items.len) {
+            dumpIndent(indent + 1);
+            array.items[i].dumpImpl(indent);
+            if (i + 1 != array.items.len) {
+                std.debug.print(",\n", .{});
+            } else {
+                std.debug.print("\n", .{});
+            }
+            i += 1;
+        }
+        dumpIndent(indent);
+        std.debug.print("]", .{});
+    }
+
+    fn dumpBinary(bin: []const u8, indent: u8) void {
+        std.debug.print("[", .{});
+        var i: usize = 0;
+        while (i < bin.len) {
+            std.debug.print("{}", .{bin[i]});
+            i += 1;
+            if (i != bin.len) {
+                std.debug.print(", ", .{});
+            }
+        }
+        std.debug.print("]", .{});
+    }
+
+    fn dumpIndent(indent: u8) void {
+        var i: usize = 0;
+        while (i < indent * 2) {
+            std.debug.print(" ", .{});
+            i += 1;
+        }
+    }
+
     fn equalInt(self: Value, oth: i64) bool {
         return switch (self) {
             .int => |val| val == oth,
@@ -129,29 +225,23 @@ pub const Value = union(enum) {
     fn equalMap(self: Value, oth: std.StringHashMap(Value)) bool {
         return switch (self) {
             .map => |val| {
-                return false;
+                if (val.count() != oth.count()) {
+                    return false;
+                }
+                var it = self.map.iterator();
+                while (it.next()) |i| {
+                    if (oth.get(i.key)) |v| {
+                        if (!i.value.equal(v)) {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+                return true;
             },
             else => false,
         };
-    }
-
-    pub fn free(self: *Value) void {
-        switch (self.*) {
-            .array => {
-                for (self.array.items) |*v| {
-                    v.free();
-                }
-                self.array.deinit();
-            },
-            .map => {
-                var it = self.map.iterator();
-                while (it.next()) |i| {
-                    i.value.free();
-                }
-                self.map.deinit();
-            },
-            else => {},
-        }
     }
 };
 
