@@ -4,6 +4,28 @@ const testing = std.testing;
 const value = @import("value.zig");
 const builtin = @import("builtin");
 
+pub const fix_map_max = 15;
+pub const map16_max = 65535;
+pub const fix_array_max = 15;
+pub const array16_max = 65535;
+const fix_str_max = 31;
+const str8_max = 255;
+const str16_max = 65535;
+pub const neg_int_fix_min = -32;
+pub const pos_int_fix_max = 127;
+pub const uint8_max = 255;
+pub const uint16_max = 65535;
+pub const uint32_max = 4294967295;
+pub const uint64_max = 18446744073709551615;
+pub const int8_max = 127;
+pub const int16_max = 32767;
+pub const int32_max = 2147483647;
+pub const int64_max = 9223372036854775807;
+pub const int8_min = -128;
+pub const int16_min = -32768;
+pub const int32_min = -int32_max - 1;
+pub const int64_min = -int64_max - 1;
+
 pub const EncodeError = error{
     UnsupportedType,
     OutOfMemory,
@@ -60,15 +82,61 @@ pub fn encode(allocator: *std.mem.Allocator, val: anytype) EncodeError![]u8 {
             },
             else => error.UnsupportedType,
         },
+        .Struct => encodeStruct(@TypeOf(val), allocator, val),
         else => error.UnsupportedType,
     };
 }
 
-pub const fix_map_max = 15;
-pub const map16_max = 65535;
+fn encodeStruct(comptime T: type, allocator: *std.mem.Allocator, v: T) EncodeError![]u8 {
+    const ti = @typeInfo(T);
+    if (ti.Struct.fields.len <= fix_map_max) {
+        return encodeFixMap(T, allocator, v);
+    } else if (ti.Struct.fields.len <= fix_map16_max) {
+        return encodeMap16(T, allocator, v);
+    }
+    return encodeMap32(T, allocator, v);
+}
 
-pub const fix_array_max = 15;
-pub const array16_max = 65535;
+fn encodeFixMap(comptime T: type, allocator: *std.mem.Allocator, v: T) EncodeError![]u8 {
+    const len = @typeInfo(T).Struct.fields.len;
+    var entries = try encodeMapEntries(T, allocator, v);
+    var out = try allocator.alloc(u8, 1 + entries.len);
+    out[0] = (Format{ .fix_map = @intCast(u8, len) }).toUint8();
+    std.mem.copy(u8, out[1..], entries);
+    // now release the elems and joined elems
+    allocator.free(entries);
+    return out;
+}
+
+fn encodeMapEntries(comptime T: type, allocator: *std.mem.Allocator, v: T) EncodeError![]u8 {
+    // allocate twice the size as we space for each keys
+    // and values.
+    const ti = @typeInfo(T);
+    var entries = try allocator.alloc([]u8, ti.Struct.fields.len * 2);
+    var i: usize = 0;
+    inline for (ti.Struct.fields) |field| {
+        // FIXME(): we have a memory leak here most likely
+        // in the case we return an error the error is not
+        // freed, but knowing that the only error which can happen
+        // in encodeValue is an OutOfMemory error, it's quite
+        // certain we would not recover anyway. Will take care of
+        // this later
+        var encodedkey = try encodeStrAny(allocator, field.name);
+        entries[i] = encodedkey;
+        var encodedvalue = try encode(allocator, @field(v, field.name));
+        entries[i + 1] = encodedvalue;
+        i += 2;
+    }
+    // FIXME(): see previous comment, same concerns.
+    var out = try std.mem.join(allocator, &[_]u8{}, entries);
+    // free the slice of encoded elements as they are not required anymore
+    for (entries) |e| {
+        allocator.free(e);
+    }
+    allocator.free(entries);
+
+    return out;
+}
 
 fn encodeArrayAny(comptime T: type, allocator: *std.mem.Allocator, v: []const T) EncodeError![]u8 {
     if (v.len <= fix_array_max) {
@@ -172,10 +240,6 @@ fn encodeBin32(allocator: *std.mem.Allocator, v: []const u8) EncodeError![]u8 {
     return out;
 }
 
-const fix_str_max = 31;
-const str8_max = 255;
-const str16_max = 65535;
-
 pub fn encodeStrAny(allocator: *std.mem.Allocator, v: []const u8) EncodeError![]u8 {
     if (v.len <= fix_str_max) {
         return encodeFixStr(allocator, v);
@@ -239,21 +303,6 @@ fn encodeFloat64(allocator: *std.mem.Allocator, v: f64) EncodeError![]u8 {
     std.mem.writeIntBig(u64, out[1 .. 1 + @sizeOf(u64)], @bitCast(u64, v));
     return out;
 }
-
-pub const neg_int_fix_min = -32;
-pub const pos_int_fix_max = 127;
-pub const uint8_max = 255;
-pub const uint16_max = 65535;
-pub const uint32_max = 4294967295;
-pub const uint64_max = 18446744073709551615;
-pub const int8_max = 127;
-pub const int16_max = 32767;
-pub const int32_max = 2147483647;
-pub const int64_max = 9223372036854775807;
-pub const int8_min = -128;
-pub const int16_min = -32768;
-pub const int32_min = -int32_max - 1;
-pub const int64_min = -int64_max - 1;
 
 pub fn encodeIntAny(allocator: *std.mem.Allocator, v: i64) EncodeError![]u8 {
     if (v >= neg_int_fix_min and v <= 0) {
@@ -474,5 +523,26 @@ test "encode fix array" {
     var array = [_]u16{ 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000 };
     var encoded = try encode(std.testing.allocator, array);
     testing.expect(std.mem.eql(u8, bytes[0..], encoded));
+    std.testing.allocator.free(encoded);
+}
+
+test "encode struct" {
+    const hex = "9acd03e8cd07d0cd0bb8cd0fa0cd1388cd1770cd1b58cd1f40cd2328cd2710"; // [1000,2000,3000,4000,5000,6000,7000,8000,9000,10000]
+    var bytes: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(bytes[0..], hex);
+
+    const s = struct {
+        string: []const u8 = "string",
+        int: i32 = -32,
+        uint: u64 = 64,
+        boul: bool = true,
+    };
+
+    var _s = s{};
+
+    var encoded = try encode(std.testing.allocator, &_s);
+    // testing.expect(std.mem.eql(u8, bytes[0..], encoded));
+    std.debug.print("map: {}\n", .{encoded});
+
     std.testing.allocator.free(encoded);
 }
