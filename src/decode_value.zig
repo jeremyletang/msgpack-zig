@@ -339,7 +339,7 @@ test "decode int64 truncated error" {
     }
 }
 
-test "decode float 32" {
+test "decode value float 32" {
     const hex = "ca40918c7d"; // 4.548399448394775
     var data: [hex.len / 2]u8 = undefined;
     try std.fmt.hexToBytes(data[0..], hex);
@@ -347,7 +347,7 @@ test "decode float 32" {
     expect(v.float == 4.548399448394775);
 }
 
-test "decode float 64" {
+test "decode value float 64" {
     const hex = "cb40918c7df3b645a2"; // 1123.123
     var data: [hex.len / 2]u8 = undefined;
     try std.fmt.hexToBytes(data[0..], hex);
@@ -391,7 +391,7 @@ test "decode fix str truncated" {
     }
 }
 
-test "decode str8" {
+test "decode value str8" {
     const hex = "d92368656c6c6f20776f726c642068656c6c6f20776f726c642068656c6c6f20776f726c64"; // "hello world hello world hello world"
     var data: [hex.len / 2]u8 = undefined;
     try std.fmt.hexToBytes(data[0..], hex);

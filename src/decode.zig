@@ -45,12 +45,32 @@ pub const Decoder = struct {
                 Format.nil => null,
                 else => try self.decode(optionalInfo.child, buf),
             },
+            .Array => |arrayInfo| switch (arrayInfo.child) {
+                u8 => readStrOrBinAny(self.allocator, buf),
+                else => self.decodeArrayAny(arrayInfo.child, buf),
+            },
+            .Pointer => |pointerInfo| switch (pointerInfo.size) {
+                .One => switch (pointerInfo.child) {
+                    u8 => readStrOrBinAny(self.allocator, buf),
+                    else => self.decode(pointerInfo.child, buf),
+                },
+                .Slice => switch (pointerInfo.child) {
+                    u8 => readStrOrBinAny(self.allocator, buf),
+                    else => self.decode(pointerInfo.child, buf),
+                },
+                else => error.UnsupportedType,
+            },
+
             else => switch (fmt) {
                 Format.nil => error.NilFormatWithNonOptionalType,
                 Format.never_used => error.ReservedFormatInInput,
                 else => unreachable,
             },
         };
+    }
+
+    fn decodeArrayAny(comptime T: type, buf: []const u8) DecodeError!T {
+        unreachable;
     }
 };
 
@@ -62,10 +82,43 @@ pub fn decode(comptime T: type, allocator: *std.mem.Allocator, buf: []const u8) 
     return decoder.decode(T, buf);
 }
 
+fn readStrOrBinAny(
+    allocator: *std.mem.Allocator,
+    buf: []const u8,
+) DecodeError![]u8 {
+    var str = try readStrOrBinAnyConst(allocator, buf);
+    var out = try allocator.alloc(u8, str.len);
+    std.mem.copy(u8, out, str);
+    return out;
+}
+
+fn readStrOrBinAnyConst(
+    allocator: *std.mem.Allocator,
+    buf: []const u8,
+) DecodeError![]const u8 {
+    return switch (format.from_u8(buf[0])) {
+        Format.fix_str => |len| readFixStr(buf[1..], len),
+        Format.str8 => readStr8(buf[1..]),
+        Format.str16 => readStr16(buf[1..]),
+        Format.str32 => readStr32(buf[1..]),
+        Format.bin8 => readBin8(buf[1..]),
+        Format.bin16 => readBin16(buf[1..]),
+        Format.bin32 => readBin32(buf[1..]),
+        else => error.InvalidType,
+    };
+}
+
 fn readFloatAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T {
-    const bits = @typeInfo(T).Int.bits;
+    const bits = @typeInfo(T).Float.bits;
     const fmt = format.from_u8(buf[0]);
     var fbuf = buf[1..];
+
+    // first check if we are actually decoding a float
+    switch (fmt) {
+        Format.float32 => {},
+        Format.float64 => {},
+        else => return error.InvalidType,
+    }
 
     return switch (bits) {
         32 => switch (fmt) {
@@ -78,12 +131,12 @@ fn readFloatAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError
                 else => error.InvalidNumberSize,
             },
             false => switch (fmt) {
-                Format.Float32 => readFloat32(T, fbuf),
+                Format.float32 => readFloat32(T, fbuf),
                 Format.float64 => readFloat64(T, fbuf),
                 else => error.InvalidNumberSize,
             },
         },
-        else => error.UnsupportedType,
+        else => error.InvalidType,
     };
 }
 
@@ -91,6 +144,16 @@ fn readIntAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T
     const bits = @typeInfo(T).Int.bits;
     const fmt = format.from_u8(buf[0]);
     var intbuf = buf[1..];
+
+    // first check if we are actually decoding a int
+    switch (fmt) {
+        Format.negative_fix_int => {},
+        Format.int8 => {},
+        Format.int16 => {},
+        Format.int32 => {},
+        Format.int64 => {},
+        else => return error.InvalidType,
+    }
 
     return switch (bits) {
         8 => switch (fmt) {
@@ -137,7 +200,7 @@ fn readIntAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T
                 else => error.InvalidNumberSize,
             },
         },
-        else => error.UnsupportedType,
+        else => error.InvalidType,
     };
 }
 
@@ -145,6 +208,16 @@ fn readUintAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!
     const bits = @typeInfo(T).Int.bits;
     const fmt = format.from_u8(buf[0]);
     var intbuf = buf[1..];
+
+    // first check if we are actually decoding a uint
+    switch (fmt) {
+        Format.positive_fix_int => {},
+        Format.uint8 => {},
+        Format.uint16 => {},
+        Format.uint32 => {},
+        Format.uint64 => {},
+        else => return error.InvalidType,
+    }
 
     return switch (bits) {
         8 => switch (fmt) {
@@ -191,7 +264,7 @@ fn readUintAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!
                 else => error.InvalidNumberSize,
             },
         },
-        else => error.UnsupportedType,
+        else => error.InvalidType,
     };
 }
 
@@ -427,4 +500,49 @@ test "decode int16" {
         error.InvalidNumberSize => {},
         else => @panic("invalid error received, expected truncated input"),
     }
+}
+
+test "decode float32" {
+    const hex = "ca40918c7d"; // 4.548399448394775
+    var data: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(data[0..], hex);
+    // decode strict first
+    var v = try decode(f32, std.testing.allocator, data[0..]);
+    expect(v == 4.548399448394775);
+
+    // decode non-strict
+    var decoder = Decoder{
+        .allocator = std.testing.allocator,
+        .strictNumberSize = false,
+    };
+
+    var v2 = try decoder.decode(f64, data[0..]);
+    expect(v2 == 4.548399448394775);
+
+    // decode non-strict but error for size too small
+    // decode error now trying to use wrong type with strict setting
+    if (decoder.decode(i8, data[0..])) {
+        @panic("unexpected OK with wrong type and strict");
+    } else |err| switch (err) {
+        error.InvalidType => {},
+        else => @panic("invalid error received, expected InvalidType"),
+    }
+}
+
+test "decode const str8" {
+    const hex = "d92368656c6c6f20776f726c642068656c6c6f20776f726c642068656c6c6f20776f726c64"; // "hello world hello world hello world"
+    var data: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(data[0..], hex);
+    var v = try decode([]const u8, std.testing.allocator, data[0..]);
+    defer std.testing.allocator.free(v);
+    expect(std.mem.eql(u8, "hello world hello world hello world", v));
+}
+
+test "decode str8" {
+    const hex = "d92368656c6c6f20776f726c642068656c6c6f20776f726c642068656c6c6f20776f726c64"; // "hello world hello world hello world"
+    var data: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(data[0..], hex);
+    var v = try decode([]u8, std.testing.allocator, data[0..]);
+    defer std.testing.allocator.free(v);
+    expect(std.mem.eql(u8, "hello world hello world hello world", v));
 }
