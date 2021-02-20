@@ -8,13 +8,13 @@ const EncodeError = encode.EncodeError;
 
 pub fn encodeValue(allocator: *std.mem.Allocator, v: value.Value) EncodeError![]u8 {
     return switch (v) {
-        .int => |val| encode.encodeIntAny(allocator, val),
-        .uint => |val| encode.encodeUintAny(allocator, val),
-        .nil => encode.encodeNil(allocator),
-        .bool => |val| encode.encodeBool(allocator, val),
-        .float => |val| encode.encodeFloatAny(allocator, val),
-        .string => |val| encode.encodeStrAny(allocator, val),
-        .binary => |val| encode.encodeBinAny(allocator, val),
+        .int => |val| encode.writeIntAny(allocator, val),
+        .uint => |val| encode.writeUintAny(allocator, val),
+        .nil => encode.writeNil(allocator),
+        .bool => |val| encode.writeBool(allocator, val),
+        .float => |val| encode.writeFloatAny(allocator, val),
+        .string => |val| encode.writeStrAny(allocator, val),
+        .binary => |val| encode.writeBinAny(allocator, val),
         .array => |val| encodeArrayValue(allocator, val),
         .map => |val| encodeMapValue(allocator, val),
     };
@@ -80,7 +80,7 @@ fn encodeMapValueEntries(allocator: *std.mem.Allocator, v: std.StringHashMap(val
         // in encodeValue is an OutOfMemory error, it's quite
         // certain we would not recover anyway. Will take care of
         // this later
-        var encodedkey = try encode.encodeStrAny(allocator, entry.key);
+        var encodedkey = try encode.writeStrAny(allocator, entry.key);
         entries[i] = encodedkey;
         var encodedvalue = try encodeValue(allocator, entry.value);
         entries[i + 1] = encodedvalue;
@@ -97,7 +97,10 @@ fn encodeMapValueEntries(allocator: *std.mem.Allocator, v: std.StringHashMap(val
     return out;
 }
 
-fn encodeArrayValue(allocator: *std.mem.Allocator, v: std.ArrayList(value.Value)) EncodeError![]u8 {
+fn encodeArrayValue(
+    allocator: *std.mem.Allocator,
+    v: std.ArrayList(value.Value),
+) EncodeError![]u8 {
     if (v.items.len <= encode.fix_array_max) {
         return encodeFixArrayValue(allocator, v);
     } else if (v.items.len <= encode.array16_max) {
@@ -106,7 +109,10 @@ fn encodeArrayValue(allocator: *std.mem.Allocator, v: std.ArrayList(value.Value)
     return encodeArray32Value(allocator, v);
 }
 
-fn encodeFixArrayValue(allocator: *std.mem.Allocator, v: std.ArrayList(value.Value)) EncodeError![]u8 {
+fn encodeFixArrayValue(
+    allocator: *std.mem.Allocator,
+    v: std.ArrayList(value.Value),
+) EncodeError![]u8 {
     var elems = try encodeArrayValueElements(allocator, v);
     var out = try allocator.alloc(u8, 1 + elems.len);
     out[0] = (Format{ .fix_array = @intCast(u8, v.items.len) }).toUint8();

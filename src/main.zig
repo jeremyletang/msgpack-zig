@@ -4,10 +4,19 @@ const value = @import("value.zig");
 const expect = std.testing.expect;
 
 pub const encodeValue = @import("encode_value.zig").encodeValue;
-pub const decodeValue = @import("decode.zig").decodeValue;
+pub const decodeValue = @import("decode_value.zig").decodeValue;
 pub const encode = @import("encode.zig").encode;
-
+pub const decode = @import("decode.zig").decode;
+pub const Decoder = @import("decoder.zig").Decoder;
+pub const Encoder = @import("encoder.zig").Encoder;
 pub const Value = value.Value;
+
+pub fn valid(allocator: *std.mem.Allocator, buf: []const u8) bool {
+    if (decodeValue(allocator, buf)) |foo| {
+        return true;
+    }
+    return false;
+}
 
 test "test encode / decode map" {
     var values = std.StringHashMap(value.Value).init(std.testing.allocator);

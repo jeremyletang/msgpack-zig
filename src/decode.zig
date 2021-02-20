@@ -4,151 +4,134 @@ const value = @import("value.zig");
 const expect = std.testing.expect;
 const Format = format.Format;
 
-const DecodeError = error{
+pub const DecodeError = error{
     EmptyInput,
     TruncatedInput,
     ReservedFormat,
+    ReservedFormatInInput,
     InvalidMapKeyType,
+    InvalidType,
+    InvalidNumberSize,
+    NilFormatWithNonOptionalType,
 } || error{OutOfMemory};
 
-const ValueWithRest = struct {
-    v: value.Value,
-    rest: []const u8,
-};
+pub const Decoder = struct {
+    allocator: *std.mem.Allocator,
+    strictNumberSize: bool = true,
+    allowUnknownStructFields: bool = false,
 
-pub fn decodeValue(alloc: *std.mem.Allocator, buf: []const u8) DecodeError!value.Value {
-    var val = try readValueWithRest(alloc, buf);
-    return val.v;
-}
-
-fn readValueWithRest(alloc: *std.mem.Allocator, buf: []const u8) DecodeError!ValueWithRest {
-    if (buf.len == 0) {
-        return error.EmptyInput;
-    }
-    return switch (format.from_u8(buf[0])) {
-        Format.positive_fix_int => |i| ValueWithRest{ .v = value.Value{ .uint = i }, .rest = buf[1..] },
-        Format.fix_map => |len| readFixMapValue(alloc, buf[1..], len),
-        Format.fix_array => |len| readFixArrayValue(alloc, buf[1..], len),
-        Format.fix_str => |len| ValueWithRest{ .v = value.Value{ .string = try readFixStr(buf[1..], len) }, .rest = buf[1 + len ..] },
-        Format.nil => ValueWithRest{ .v = .nil, .rest = buf[1..] },
-        Format.never_used => error.ReservedFormat,
-        Format.bool_false => ValueWithRest{ .v = value.Value{ .bool = false }, .rest = buf[1..] },
-        Format.bool_true => ValueWithRest{ .v = value.Value{ .bool = true }, .rest = buf[1..] },
-        Format.bin8 => {
-            var v = value.Value{ .string = try readBin8(buf[1..]) };
-            return ValueWithRest{ .v = v, .rest = buf[1 + 1 + v.binary.len ..] };
-        },
-        Format.bin16 => {
-            var v = value.Value{ .string = try readBin16(buf[1..]) };
-            return ValueWithRest{ .v = v, .rest = buf[1 + 2 + v.binary.len ..] };
-        },
-        Format.bin32 => {
-            var v = value.Value{ .string = try readBin32(buf[1..]) };
-            return ValueWithRest{ .v = v, .rest = buf[1 + 4 + v.binary.len ..] };
-        },
-        Format.float32 => ValueWithRest{ .v = value.Value{ .float = try readFloat32(f32, buf[1..]) }, .rest = buf[5..] },
-        Format.float64 => ValueWithRest{ .v = value.Value{ .float = try readFloat64(f64, buf[1..]) }, .rest = buf[9..] },
-        Format.uint8 => ValueWithRest{ .v = value.Value{ .uint = try readUint8(u8, buf[1..]) }, .rest = buf[1..] },
-        Format.uint16 => ValueWithRest{ .v = value.Value{ .uint = try readUint16(u64, buf[1..]) }, .rest = buf[3..] },
-        Format.uint32 => ValueWithRest{ .v = value.Value{ .uint = try readUint32(u32, buf[1..]) }, .rest = buf[5..] },
-        Format.uint64 => ValueWithRest{ .v = value.Value{ .uint = try readUint64(u64, buf[1..]) }, .rest = buf[9..] },
-        Format.int8 => ValueWithRest{ .v = value.Value{ .int = try readInt8(i8, buf[1..]) }, .rest = buf[1..] },
-        Format.int16 => ValueWithRest{ .v = value.Value{ .int = try readInt16(i16, buf[1..]) }, .rest = buf[3..] },
-        Format.int32 => ValueWithRest{ .v = value.Value{ .int = try readInt32(i32, buf[1..]) }, .rest = buf[5..] },
-        Format.int64 => ValueWithRest{ .v = value.Value{ .int = try readInt64(i64, buf[1..]) }, .rest = buf[9..] },
-        Format.str8 => {
-            var v = value.Value{ .string = try readStr8(buf[1..]) };
-            return ValueWithRest{ .v = v, .rest = buf[1 + 1 + v.string.len ..] };
-        },
-        Format.str16 => {
-            var v = value.Value{ .string = try readStr16(buf[1..]) };
-            return ValueWithRest{ .v = v, .rest = buf[1 + 2 + v.string.len ..] };
-        },
-        Format.str32 => {
-            var v = value.Value{ .string = try readStr32(buf[1..]) };
-            return ValueWithRest{ .v = v, .rest = buf[1 + 4 + v.string.len ..] };
-        },
-        Format.negative_fix_int => |i| ValueWithRest{ .v = value.Value{ .int = @intCast(i64, i) }, .rest = buf[1..] },
-        else => unreachable,
-    };
-}
-
-fn readFixMapValue(allocator: *std.mem.Allocator, buf: []const u8, len: u8) DecodeError!ValueWithRest {
-    return readMapValue(allocator, buf, len);
-}
-
-fn readMapValue(allocator: *std.mem.Allocator, buf: []const u8, len: u8) DecodeError!ValueWithRest {
-    var m = std.StringHashMap(value.Value).init(allocator);
-    if (len == 0) {
-        return ValueWithRest{ .v = value.Value{ .map = m }, .rest = buf };
-    }
-
-    var i: usize = 0;
-    var rest = buf;
-    while (i < len) {
-        // first element is a string
-        var key: []const u8 = undefined;
-        switch (format.from_u8(rest[0])) {
-            Format.fix_str => |slen| {
-                key = try readFixStr(rest[1..], slen);
-                rest = rest[1 + slen ..];
-            },
-            Format.str8 => {
-                key = try readStr8(rest[1..]);
-                rest = rest[1 + 1 + key.len ..];
-            },
-            Format.str16 => {
-                key = try readStr16(rest[1..]);
-                rest = rest[1 + 2 + key.len ..];
-            },
-            Format.str32 => {
-                key = try readStr32(rest[1..]);
-                rest = rest[1 + 4 + key.len ..];
-            },
-            else => return error.InvalidMapKeyType,
+    pub fn decode(self: *Decoder, comptime T: type, buf: []const u8) DecodeError!T {
+        if (buf.len == 0) {
+            return error.EmptyInput;
         }
 
-        var val = try readValueWithRest(allocator, rest);
-        rest = val.rest;
-        try m.put(key, val.v);
-        i += 1;
+        const fmt = format.from_u8(buf[0]);
+        return switch (@typeInfo(T)) {
+            .Null => switch (fmt) {
+                Format.nil => null,
+                else => error.InvalidType,
+            },
+            .Bool => switch (fmt) {
+                Format.bool_true => true,
+                Format.bool_false => false,
+                else => error.InvalidType,
+            },
+            .Int => |intInfo| switch (intInfo.is_signed) {
+                true => readIntAny(T, buf, self.strictNumberSize),
+                false => readUintAny(T, buf, self.strictNumberSize),
+            },
+            .Float => readFloatAny(T, buf, self.strictNumberSize),
+            .Optional => |optionalInfo| switch (fmt) {
+                Format.nil => null,
+                else => try self.decode(optionalInfo.child, buf),
+            },
+            else => switch (fmt) {
+                Format.nil => error.NilFormatWithNonOptionalType,
+                Format.never_used => error.ReservedFormatInInput,
+                else => unreachable,
+            },
+        };
     }
+};
 
-    return ValueWithRest{ .v = value.Value{ .map = m }, .rest = rest };
+pub fn decode(comptime T: type, allocator: *std.mem.Allocator, buf: []const u8) DecodeError!T {
+    var decoder = Decoder{
+        .allocator = allocator,
+    };
+
+    return decoder.decode(T, buf);
 }
 
-fn readFixArrayValue(allocator: *std.mem.Allocator, buf: []const u8, len: u8) DecodeError!ValueWithRest {
-    return readArrayValue(allocator, buf, len);
+fn readFloatAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T {}
+
+fn readIntAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T {
+    const bits = @typeInfo(T).Int.bits;
+    const fmt = format.from_u8(buf[0]);
+    var intbuf = buf[1..];
+
+    //  if (strictSize) {
+    return switch (bits) {
+        8 => switch (fmt) {
+            Format.negative_fix_int => |val| val,
+            Format.int8 => readInt8(T, intbuf),
+            else => error.InvalidNumberSize,
+        },
+        16 => switch (strictSize) {
+            true => switch (fmt) {
+                Format.int16 => readInt16(T, intbuf),
+                else => error.InvalidNumberSize,
+            },
+            false => switch (fmt) {
+                Format.negative_fix_int => |val| @intCast(i16, val),
+                Format.int8 => readInt8(T, intbuf),
+                else => error.InvalidNumberSize,
+            },
+        },
+        32 => switch (strictSize) {
+            true => switch (fmt) {
+                Format.int32 => readInt32(T, intbuf),
+                else => error.InvalidNumberSize,
+            },
+            false => switch (fmt) {
+                Format.negative_fix_int => |val| @intCast(i32, val),
+                Format.int8 => readInt8(T, intbuf),
+                Format.int16 => readInt16(T, intbuf),
+                else => error.InvalidNumberSize,
+            },
+        },
+        64 => switch (strictSize) {
+            true => switch (fmt) {
+                Format.int64 => readInt64(T, intbuf),
+                else => error.InvalidNumberSize,
+            },
+            false => switch (fmt) {
+                Format.negative_fix_int => |val| @intCast(i64, val),
+                Format.int8 => readInt8(T, intbuf),
+                Format.int16 => readInt16(T, intbuf),
+                Format.int32 => readInt32(T, intbuf),
+                else => error.InvalidNumberSize,
+            },
+        },
+        else => error.UnsupportedType,
+    };
+    //    }
 }
 
-fn readArray16Value(allocator: *std.mem.Allocator, buf: []const u8) DecodeError!ValueWithRest {
-    return readArrayValue(allocator, try readUint16(u16, buf), buf[2..]);
+fn readUintAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T {
+    const bits = @typeInfo(T).Int.bits;
+
+    //  if (strictSize) {
+    return switch (bits) {
+        8 => readUint8(T, buf),
+        16 => readUint16(T, buf),
+        32 => readUint32(T, buf),
+        64 => readUint64(T, buf),
+        else => error.UnsupportedType,
+    };
+    //    }
 }
 
-fn readArray32Value(allocator: *std.mem.Allocator, buf: []const u8) DecodeError!ValueWithRest {
-    return readArrayValue(allocator, try readUint32(u32, buf), buf[2..]);
-}
-
-fn readArrayValue(allocator: *std.mem.Allocator, buf: []const u8, len: usize) DecodeError!ValueWithRest {
-    if (len == 0) {
-        return ValueWithRest{ .v = value.Value{ .array = try std.ArrayList(value.Value).initCapacity(allocator, 0) }, .rest = buf };
-    }
-
-    var array = try std.ArrayList(value.Value).initCapacity(allocator, len);
-    var i: usize = 0;
-    var buff = buf;
-    while (i < len) {
-        var val = try readValueWithRest(allocator, buff);
-        buff = val.rest;
-        // array.items[i] = val.v;
-        try array.append(val.v);
-        i += 1;
-    }
-
-    return ValueWithRest{ .v = value.Value{ .array = array }, .rest = buff };
-}
-
-fn readBin8(buf: []const u8) DecodeError![]const u8 {
+pub fn readBin8(buf: []const u8) DecodeError![]const u8 {
     var n = try readUint8(u8, buf);
     var sbuf = buf[1..];
     if (sbuf.len < n) {
@@ -157,7 +140,7 @@ fn readBin8(buf: []const u8) DecodeError![]const u8 {
     return sbuf[0..n];
 }
 
-fn readBin16(buf: []const u8) DecodeError![]const u8 {
+pub fn readBin16(buf: []const u8) DecodeError![]const u8 {
     var n = try readUint16(u16, buf);
     var sbuf = buf[2..];
     if (sbuf.len < n) {
@@ -166,7 +149,7 @@ fn readBin16(buf: []const u8) DecodeError![]const u8 {
     return sbuf[0..n];
 }
 
-fn readBin32(buf: []const u8) DecodeError![]const u8 {
+pub fn readBin32(buf: []const u8) DecodeError![]const u8 {
     var n = try readUint32(u32, buf);
     var sbuf = buf[4..];
     if (sbuf.len < n) {
@@ -175,14 +158,14 @@ fn readBin32(buf: []const u8) DecodeError![]const u8 {
     return sbuf[0..n];
 }
 
-fn readFixStr(buf: []const u8, len: u8) DecodeError![]const u8 {
+pub fn readFixStr(buf: []const u8, len: u8) DecodeError![]const u8 {
     if (buf.len < len) {
         return error.TruncatedInput;
     }
     return buf[0..len];
 }
 
-fn readStr8(buf: []const u8) DecodeError![]const u8 {
+pub fn readStr8(buf: []const u8) DecodeError![]const u8 {
     var n = try readUint8(u8, buf);
     var sbuf = buf[1..];
     if (sbuf.len < n) {
@@ -191,7 +174,7 @@ fn readStr8(buf: []const u8) DecodeError![]const u8 {
     return sbuf[0..n];
 }
 
-fn readStr16(buf: []const u8) DecodeError![]const u8 {
+pub fn readStr16(buf: []const u8) DecodeError![]const u8 {
     var n = try readUint16(u16, buf);
     var sbuf = buf[2..];
     if (sbuf.len < n) {
@@ -200,7 +183,7 @@ fn readStr16(buf: []const u8) DecodeError![]const u8 {
     return sbuf[0..n];
 }
 
-fn readStr32(buf: []const u8) DecodeError![]const u8 {
+pub fn readStr32(buf: []const u8) DecodeError![]const u8 {
     var n = try readUint32(u32, buf);
     var sbuf = buf[4..];
     if (sbuf.len < n) {
@@ -209,70 +192,70 @@ fn readStr32(buf: []const u8) DecodeError![]const u8 {
     return sbuf[0..n];
 }
 
-fn readUint8(comptime U: type, buf: []const u8) DecodeError!U {
+pub fn readUint8(comptime U: type, buf: []const u8) DecodeError!U {
     if (buf.len < @sizeOf(u8)) {
         return error.TruncatedInput;
     }
     return std.mem.readIntBig(u8, buf[0..@sizeOf(u8)]);
 }
 
-fn readUint16(comptime U: type, buf: []const u8) DecodeError!U {
+pub fn readUint16(comptime U: type, buf: []const u8) DecodeError!U {
     if (buf.len < @sizeOf(u16)) {
         return error.TruncatedInput;
     }
     return std.mem.readIntBig(u16, buf[0..@sizeOf(u16)]);
 }
 
-fn readUint32(comptime U: type, buf: []const u8) DecodeError!U {
+pub fn readUint32(comptime U: type, buf: []const u8) DecodeError!U {
     if (buf.len < @sizeOf(u32)) {
         return error.TruncatedInput;
     }
     return std.mem.readIntBig(u32, buf[0..@sizeOf(u32)]);
 }
 
-fn readUint64(comptime U: type, buf: []const u8) DecodeError!U {
+pub fn readUint64(comptime U: type, buf: []const u8) DecodeError!U {
     if (buf.len < @sizeOf(u64)) {
         return error.TruncatedInput;
     }
     return std.mem.readIntBig(u64, buf[0..@sizeOf(u64)]);
 }
 
-fn readInt8(comptime I: type, buf: []const u8) DecodeError!I {
+pub fn readInt8(comptime I: type, buf: []const u8) DecodeError!I {
     if (buf.len < @sizeOf(i8)) {
         return error.TruncatedInput;
     }
     return std.mem.readIntBig(i8, buf[0..@sizeOf(i8)]);
 }
 
-fn readInt16(comptime I: type, buf: []const u8) DecodeError!I {
+pub fn readInt16(comptime I: type, buf: []const u8) DecodeError!I {
     if (buf.len < @sizeOf(i16)) {
         return error.TruncatedInput;
     }
     return std.mem.readIntBig(i16, buf[0..@sizeOf(i16)]);
 }
 
-fn readInt32(comptime I: type, buf: []const u8) DecodeError!I {
+pub fn readInt32(comptime I: type, buf: []const u8) DecodeError!I {
     if (buf.len < @sizeOf(i32)) {
         return error.TruncatedInput;
     }
     return std.mem.readIntBig(i32, buf[0..@sizeOf(i32)]);
 }
 
-fn readInt64(comptime I: type, buf: []const u8) DecodeError!I {
+pub fn readInt64(comptime I: type, buf: []const u8) DecodeError!I {
     if (buf.len < @sizeOf(i64)) {
         return error.TruncatedInput;
     }
     return std.mem.readIntBig(i64, buf[0..@sizeOf(i64)]);
 }
 
-fn readFloat32(comptime F: type, buf: []const u8) DecodeError!F {
+pub fn readFloat32(comptime F: type, buf: []const u8) DecodeError!F {
     if (buf.len < @sizeOf(f32)) {
         return error.TruncatedInput;
     }
     return @bitCast(f32, std.mem.readIntBig(u32, buf[0..@sizeOf(f32)]));
 }
 
-fn readFloat64(comptime F: type, buf: []const u8) DecodeError!F {
+pub fn readFloat64(comptime F: type, buf: []const u8) DecodeError!F {
     if (buf.len < @sizeOf(f64)) {
         return error.TruncatedInput;
     }
@@ -282,7 +265,7 @@ fn readFloat64(comptime F: type, buf: []const u8) DecodeError!F {
 test "empty input" {
     var data: [0]u8 = undefined;
 
-    if (decodeValue(std.testing.allocator, data[0..])) {
+    if (decode(i32, std.testing.allocator, data[0..])) {
         @panic("unexpected OK with empty input");
     } else |err| switch (err) {
         error.EmptyInput => {},
@@ -294,318 +277,90 @@ test "decode nil" {
     const hex = "c0";
     var data: [hex.len / 2]u8 = undefined;
     try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v == .nil);
+    var v = try decode(?bool, std.testing.allocator, data[0..]);
+    expect(v == null);
 }
 
-test "decode false" {
+test "decode bool false" {
     const hex = "c2";
     var data: [hex.len / 2]u8 = undefined;
     try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.bool == false);
+    var v = try decode(?bool, std.testing.allocator, data[0..]);
+    expect(v == false);
+
+    // null
+    var hex2 = "c0";
+    var data2: [hex.len / 2]u8 = undefined;
+    try std.fmt.hexToBytes(data2[0..], hex2);
+    v = try decode(?bool, std.testing.allocator, data2[0..]);
+    expect(v == null);
 }
 
-test "decode true" {
+test "decode bool true" {
     const hex = "c3";
     var data: [hex.len / 2]u8 = undefined;
     try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.bool == true);
-}
-
-test "decode uint8" {
-    const hex = "cc80"; // 128
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.uint == 128);
-}
-
-test "decode uint8 truncated error" {
-    const hex = "cc";
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    if (decodeValue(std.testing.allocator, data[0..])) {
-        @panic("unexpected OK with empty input");
-    } else |err| switch (err) {
-        error.TruncatedInput => {},
-        else => @panic("invalid error received, expected truncated input"),
-    }
-}
-
-test "decode uint16" {
-    const hex = "cd0640"; // 1600
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.uint == 1600);
-}
-
-test "decode uint16 truncated error" {
-    const hex = "cd06";
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    if (decodeValue(std.testing.allocator, data[0..])) {
-        @panic("unexpected OK with empty input");
-    } else |err| switch (err) {
-        error.TruncatedInput => {},
-        else => @panic("invalid error received, expected truncated input"),
-    }
-}
-
-test "decode uint32" {
-    const hex = "ce00bbdef8"; // 12312312
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.uint == 12312312);
-}
-
-test "decode uint32 truncated error" {
-    const hex = "ce00bbde";
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    if (decodeValue(std.testing.allocator, data[0..])) {
-        @panic("unexpected OK with empty input");
-    } else |err| switch (err) {
-        error.TruncatedInput => {},
-        else => @panic("invalid error received, expected truncated input"),
-    }
-}
-
-test "decode uint64" {
-    const hex = "cf0000001caab5c3b3"; // 123123123123
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.uint == 123123123123);
-}
-
-test "decode uint64 truncated error" {
-    const hex = "cf0000001caab5c3";
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    if (decodeValue(std.testing.allocator, data[0..])) {
-        @panic("unexpected OK with empty input");
-    } else |err| switch (err) {
-        error.TruncatedInput => {},
-        else => @panic("invalid error received, expected truncated input"),
-    }
+    var v = try decode(?bool, std.testing.allocator, data[0..]);
+    expect(v == true);
 }
 
 test "decode int8" {
     const hex = "d085"; // -123
     var data: [hex.len / 2]u8 = undefined;
     try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.int == -123);
-}
+    // decode strict first
+    var v = try decode(i8, std.testing.allocator, data[0..]);
+    expect(v == -123);
 
-test "decode int8 truncated error" {
-    const hex = "d0";
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    if (decodeValue(std.testing.allocator, data[0..])) {
-        @panic("unexpected OK with empty input");
+    // decode error now trying to use wrong type with strict setting
+    if (decode(i32, std.testing.allocator, data[0..])) {
+        @panic("unexpected OK with wrong type and strict");
     } else |err| switch (err) {
-        error.TruncatedInput => {},
+        error.InvalidNumberSize => {},
         else => @panic("invalid error received, expected truncated input"),
     }
+
+    // decode non-strict
+    var decoder = Decoder{
+        .allocator = std.testing.allocator,
+        .strictNumberSize = false,
+    };
+
+    var v2 = try decoder.decode(i64, data[0..]);
+    expect(v2 == -123);
 }
 
 test "decode int16" {
     const hex = "d1fb30"; // -1232
     var data: [hex.len / 2]u8 = undefined;
     try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.int == -1232);
-}
+    // decode strict first
+    var v = try decode(i16, std.testing.allocator, data[0..]);
+    expect(v == -1232);
 
-test "decode int16 truncated error" {
-    const hex = "d1fb";
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    if (decodeValue(std.testing.allocator, data[0..])) {
-        @panic("unexpected OK with empty input");
+    // decode error now trying to use wrong type with strict setting
+    if (decode(i32, std.testing.allocator, data[0..])) {
+        @panic("unexpected OK with wrong type and strict");
     } else |err| switch (err) {
-        error.TruncatedInput => {},
+        error.InvalidNumberSize => {},
+        else => @panic("invalid error received, expected truncated input"),
+    }
+
+    // decode non-strict
+    var decoder = Decoder{
+        .allocator = std.testing.allocator,
+        .strictNumberSize = false,
+    };
+
+    var v2 = try decoder.decode(i64, data[0..]);
+    expect(v2 == -1232);
+
+    // decode non-strict but error for size too small
+    // decode error now trying to use wrong type with strict setting
+    if (decoder.decode(i8, data[0..])) {
+        @panic("unexpected OK with wrong type and strict");
+    } else |err| switch (err) {
+        error.InvalidNumberSize => {},
         else => @panic("invalid error received, expected truncated input"),
     }
 }
-
-test "decode int32" {
-    const hex = "d2fffe1eb4"; // -123212
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.int == -123212);
-}
-
-test "decode int32 truncated error" {
-    const hex = "d2fffe1e";
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    if (decodeValue(std.testing.allocator, data[0..])) {
-        @panic("unexpected OK with empty input");
-    } else |err| switch (err) {
-        error.TruncatedInput => {},
-        else => @panic("invalid error received, expected truncated input"),
-    }
-}
-
-test "decode int64" {
-    const hex = "d3fffffffd2198eb05"; // -12321232123
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.int == -12321232123);
-}
-
-test "decode int64 truncated error" {
-    const hex = "d3fffffffd2198eb";
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    if (decodeValue(std.testing.allocator, data[0..])) {
-        @panic("unexpected OK with empty input");
-    } else |err| switch (err) {
-        error.TruncatedInput => {},
-        else => @panic("invalid error received, expected truncated input"),
-    }
-}
-
-test "decode float 32" {
-    const hex = "ca40918c7d"; // 4.548399448394775
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.float == 4.548399448394775);
-}
-
-test "decode float 64" {
-    const hex = "cb40918c7df3b645a2"; // 1123.123
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.float == 1123.123);
-}
-
-test "decode positive fix int" {
-    const hex = "0c"; // 12
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.uint == 12);
-}
-
-test "decode negative fix int" {
-    const hex = "e0"; // -32
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.int == -32);
-}
-
-test "decode fix str" {
-    const hex = "ab68656c6c6f20776f726c64"; // "hello world"
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(std.mem.eql(u8, "hello world", v.string));
-}
-
-test "decode fix str truncated" {
-    const hex = "ab68656c6c6f20776f"; // "hello world"
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    if (decodeValue(std.testing.allocator, data[0..])) {
-        @panic("unexpected OK with empty input");
-    } else |err| switch (err) {
-        error.TruncatedInput => {},
-        else => @panic("invalid error received, expected truncated input"),
-    }
-}
-
-test "decode str8" {
-    const hex = "d92368656c6c6f20776f726c642068656c6c6f20776f726c642068656c6c6f20776f726c64"; // "hello world hello world hello world"
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(std.mem.eql(u8, "hello world hello world hello world", v.string));
-}
-
-test "decode empty array" {
-    const hex = "90"; // "[]"
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.array.items.len == 0);
-}
-
-test "decode array many types" {
-    const hex = "942ac3a6737472696e67cb404535c28f5c28f6"; // "[42, true, "string", 42.42]"
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.array.items.len == 4);
-    expect(v.array.items[0].uint == 42);
-    expect(v.array.items[1].bool == true);
-    expect(std.mem.eql(u8, v.array.items[2].string, "string"));
-    expect(v.array.items[3].float == 42.42);
-    v.free();
-}
-
-test "decode empty map" {
-    const hex = "80"; // {}
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.map.count() == 0);
-    v.free();
-}
-
-test "decode map many fields" {
-    // {
-    //   "s": "string",
-    //   "u": 123456,
-    //   "b": true,
-    //   "f": -2332.32323,
-    //   "i": -12343,
-    //   "a": [1, "hello"],
-    //   "m": {
-    //     "s": "hello world"
-    //   },
-    //   "n": null
-    // }
-    const hex = "88a173a6737472696e67a175ce0001e240a162c3a166cbc0a238a57e670e2ca169d1cfc9a1619201a568656c6c6fa16d81a173ab68656c6c6f20776f726c64a16ec0";
-    var data: [hex.len / 2]u8 = undefined;
-    try std.fmt.hexToBytes(data[0..], hex);
-    var v = try decodeValue(std.testing.allocator, data[0..]);
-    expect(v.map.count() == 8);
-    expect(std.mem.eql(u8, v.map.get("s").?.string, "string"));
-    expect(v.map.get("u").?.uint == 123456);
-    expect(v.map.get("b").?.bool == true);
-    expect(v.map.get("f").?.float == -2332.32323);
-    expect(v.map.get("i").?.int == -12343);
-    expect(v.map.get("a").?.array.items[0].uint == 1);
-    expect(std.mem.eql(u8, v.map.get("a").?.array.items[1].string, "hello"));
-    expect(std.mem.eql(u8, v.map.get("m").?.map.get("s").?.string, "hello world"));
-    expect(v.map.get("n").? == .nil);
-    v.free();
-}
-
-// test "decode str16" {
-//     const hex = "da2368656c6c6f20776f726c642068656c6c6f20776f726c642068656c6c6f20776f726c64"; // "hello world hello world hello world"
-//     var data: [hex.len / 2]u8 = undefined;
-//     try std.fmt.hexToBytes(data[0..], hex);
-//     var v = try read(data[0..]);
-//     expect(std.mem.eql(u8, "hello world hello world hello world", v.string));
-// }
-
-// test "decode str32" {
-//     const hex = "db2368656c6c6f20776f726c642068656c6c6f20776f726c642068656c6c6f20776f726c64"; // "hello world hello world hello world"
-//     var data: [hex.len / 2]u8 = undefined;
-//     try std.fmt.hexToBytes(data[0..], hex);
-//     var v = try read(data[0..]);
-//     expect(std.mem.eql(u8, "hello world hello world hello world", v.string));
-// }
