@@ -69,7 +69,6 @@ fn readIntAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T
     const fmt = format.from_u8(buf[0]);
     var intbuf = buf[1..];
 
-    //  if (strictSize) {
     return switch (bits) {
         8 => switch (fmt) {
             Format.negative_fix_int => |val| val,
@@ -114,21 +113,57 @@ fn readIntAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T
         },
         else => error.UnsupportedType,
     };
-    //    }
 }
 
 fn readUintAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T {
     const bits = @typeInfo(T).Int.bits;
+    const fmt = format.from_u8(buf[0]);
+    var intbuf = buf[1..];
 
-    //  if (strictSize) {
     return switch (bits) {
-        8 => readUint8(T, buf),
-        16 => readUint16(T, buf),
-        32 => readUint32(T, buf),
-        64 => readUint64(T, buf),
+        8 => switch (fmt) {
+            Format.positive_fix_int => |val| val,
+            Format.uint8 => readUint8(T, intbuf),
+            else => error.InvalidNumberSize,
+        },
+        16 => switch (strictSize) {
+            true => switch (fmt) {
+                Format.uint16 => readUint16(T, intbuf),
+                else => error.InvalidNumberSize,
+            },
+            false => switch (fmt) {
+                Format.positive_fix_int => |val| @intCast(u16, val),
+                Format.uint8 => readUint8(T, intbuf),
+                else => error.InvalidNumberSize,
+            },
+        },
+        32 => switch (strictSize) {
+            true => switch (fmt) {
+                Format.uint32 => readInt32(T, intbuf),
+                else => error.InvalidNumberSize,
+            },
+            false => switch (fmt) {
+                Format.positive_fix_int => |val| @intCast(u32, val),
+                Format.uint8 => readUint8(T, intbuf),
+                Format.uint16 => readUint16(T, intbuf),
+                else => error.InvalidNumberSize,
+            },
+        },
+        64 => switch (strictSize) {
+            true => switch (fmt) {
+                Format.uint64 => readUint64(T, intbuf),
+                else => error.InvalidNumberSize,
+            },
+            false => switch (fmt) {
+                Format.positive_fix_int => |val| @intCast(u64, val),
+                Format.uint8 => readUint8(T, intbuf),
+                Format.uint16 => readUint16(T, intbuf),
+                Format.uint32 => readUint32(T, intbuf),
+                else => error.InvalidNumberSize,
+            },
+        },
         else => error.UnsupportedType,
     };
-    //    }
 }
 
 pub fn readBin8(buf: []const u8) DecodeError![]const u8 {
