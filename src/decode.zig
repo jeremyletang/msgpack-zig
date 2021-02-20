@@ -62,7 +62,30 @@ pub fn decode(comptime T: type, allocator: *std.mem.Allocator, buf: []const u8) 
     return decoder.decode(T, buf);
 }
 
-fn readFloatAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T {}
+fn readFloatAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T {
+    const bits = @typeInfo(T).Int.bits;
+    const fmt = format.from_u8(buf[0]);
+    var fbuf = buf[1..];
+
+    return switch (bits) {
+        32 => switch (fmt) {
+            Format.float32 => readFloat32(T, fbuf),
+            else => error.InvalidNumberSize,
+        },
+        64 => switch (strictSize) {
+            true => switch (fmt) {
+                Format.float64 => readFloat64(T, fbuf),
+                else => error.InvalidNumberSize,
+            },
+            false => switch (fmt) {
+                Format.Float32 => readFloat32(T, fbuf),
+                Format.float64 => readFloat64(T, fbuf),
+                else => error.InvalidNumberSize,
+            },
+        },
+        else => error.UnsupportedType,
+    };
+}
 
 fn readIntAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T {
     const bits = @typeInfo(T).Int.bits;
@@ -83,6 +106,7 @@ fn readIntAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T
             false => switch (fmt) {
                 Format.negative_fix_int => |val| @intCast(i16, val),
                 Format.int8 => readInt8(T, intbuf),
+                Format.int16 => readInt16(T, intbuf),
                 else => error.InvalidNumberSize,
             },
         },
@@ -95,6 +119,7 @@ fn readIntAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T
                 Format.negative_fix_int => |val| @intCast(i32, val),
                 Format.int8 => readInt8(T, intbuf),
                 Format.int16 => readInt16(T, intbuf),
+                Format.int32 => readInt32(T, intbuf),
                 else => error.InvalidNumberSize,
             },
         },
@@ -108,6 +133,7 @@ fn readIntAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!T
                 Format.int8 => readInt8(T, intbuf),
                 Format.int16 => readInt16(T, intbuf),
                 Format.int32 => readInt32(T, intbuf),
+                Format.int64 => readInt64(T, intbuf),
                 else => error.InvalidNumberSize,
             },
         },
@@ -134,6 +160,7 @@ fn readUintAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!
             false => switch (fmt) {
                 Format.positive_fix_int => |val| @intCast(u16, val),
                 Format.uint8 => readUint8(T, intbuf),
+                Format.uint16 => readUint16(T, intbuf),
                 else => error.InvalidNumberSize,
             },
         },
@@ -146,6 +173,7 @@ fn readUintAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!
                 Format.positive_fix_int => |val| @intCast(u32, val),
                 Format.uint8 => readUint8(T, intbuf),
                 Format.uint16 => readUint16(T, intbuf),
+                Format.uint32 => readUint32(T, intbuf),
                 else => error.InvalidNumberSize,
             },
         },
@@ -159,6 +187,7 @@ fn readUintAny(comptime T: type, buf: []const u8, strictSize: bool) DecodeError!
                 Format.uint8 => readUint8(T, intbuf),
                 Format.uint16 => readUint16(T, intbuf),
                 Format.uint32 => readUint32(T, intbuf),
+                Format.uint64 => readUint64(T, intbuf),
                 else => error.InvalidNumberSize,
             },
         },

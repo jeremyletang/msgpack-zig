@@ -158,7 +158,11 @@ pub const Encoder = struct {
         return out;
     }
 
-    fn encodeArrayAny(self: *Encoder, comptime T: type, v: []const T) EncodeError![]u8 {
+    fn encodeArrayAny(
+        self: *Encoder,
+        comptime T: type,
+        v: []const T,
+    ) EncodeError![]u8 {
         if (v.len <= fix_array_max) {
             return self.encodeFixArray(T, v);
         } else if (v.len <= array16_max) {
@@ -167,7 +171,11 @@ pub const Encoder = struct {
         return self.encodeArray32(T, v);
     }
 
-    fn encodeFixArray(self: *Encoder, comptime T: type, v: []const T) EncodeError![]u8 {
+    fn encodeFixArray(
+        self: *Encoder,
+        comptime T: type,
+        v: []const T,
+    ) EncodeError![]u8 {
         var elems = try self.encodeArrayElements(T, v);
         var out = try self.allocator.alloc(u8, 1 + elems.len);
         out[0] = (Format{ .fix_array = @intCast(u8, v.len) }).toUint8();
@@ -177,7 +185,11 @@ pub const Encoder = struct {
         return out;
     }
 
-    fn encodeArray16(self: *Encoder, comptime T: type, v: []const T) EncodeError![]u8 {
+    fn encodeArray16(
+        self: *Encoder,
+        comptime T: type,
+        v: []const T,
+    ) EncodeError![]u8 {
         var elems = try self.encodeArrayElements(T, v);
         var out = try self.allocator.alloc(u8, 1 + @sizeOf(u16) + elems.len);
 
@@ -190,7 +202,11 @@ pub const Encoder = struct {
         return out;
     }
 
-    fn encodeArray32(self: *Encoder, comptime T: type, v: []const T) EncodeError![]u8 {
+    fn encodeArray32(
+        self: *Encoder,
+        comptime T: type,
+        v: []const T,
+    ) EncodeError![]u8 {
         var elems = try self.encodeArrayElements(T, v);
         var out = try self.allocator.alloc(u8, 1 + @sizeOf(u32) + elems.len);
 
@@ -203,7 +219,11 @@ pub const Encoder = struct {
         return out;
     }
 
-    fn encodeArrayElements(self: *Encoder, comptime T: type, v: []const T) EncodeError![]u8 {
+    fn encodeArrayElements(
+        self: *Encoder,
+        comptime T: type,
+        v: []const T,
+    ) EncodeError![]u8 {
         var elems = try self.allocator.alloc([]u8, v.len);
         var i: usize = 0;
         while (i < v.len) {
